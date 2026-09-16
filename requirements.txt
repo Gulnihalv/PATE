@@ -1,0 +1,7 @@
+torch>=2.0
+pytorch-lightning>=2.0
+torchmetrics
+numpy
+matplotlib
+scikit-learn
+tensorboard
