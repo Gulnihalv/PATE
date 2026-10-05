@@ -99,6 +99,13 @@ def run_neural_eval(model, validation_text, test_lengths, test_key_lens,
 
 def run_classical_eval(validation_text, test_lengths, test_key_lens,
                        alphabet_chars, num_samples=500, min_k=3, max_k=32):
+    """Classical Vigenere baseline.
+
+    Reports three conditions per cell:
+      - char_acc / key_acc : the full pipeline (period estimated from ciphertext)
+      - oracle_char_acc    : the true period supplied, isolating shift recovery
+      - exact_key          : fraction of samples whose full key is recovered
+    """
     char2idx, idx2char = vinf.build_vocab(alphabet_chars)
     full_clean = _clean(validation_text, char2idx)
 
@@ -107,15 +114,19 @@ def run_classical_eval(validation_text, test_lengths, test_key_lens,
         results[key_len] = {}
         for chunk_len in test_lengths:
             total_chars = correct_chars = correct_key_len = 0
+            oracle_total = oracle_correct = 0
+            exact_key = 0
             total_ms = 0.0
+
             for i in range(num_samples):
                 start = (i * chunk_len * 13) % max(1, len(full_clean) - chunk_len)
                 plain = full_clean[start:start + chunk_len]
                 key = get_fixed_key(key_len, i, alphabet_chars)
                 cipher, clean_plain = vinf.encrypt_vigenere(plain, key, char2idx, idx2char)
 
+                # --- full pipeline ---
                 t0 = time.perf_counter()
-                decoded, pred_k = vcl.classical_vigenere_solve(cipher, min_k, max_k)
+                decoded, pred_k, _ = vcl.classical_vigenere_solve(cipher, min_k, max_k)
                 total_ms += (time.perf_counter() - t0) * 1000
 
                 m = min(len(clean_plain), len(decoded))
@@ -123,10 +134,23 @@ def run_classical_eval(validation_text, test_lengths, test_key_lens,
                 total_chars += m
                 correct_key_len += int(pred_k == key_len)
 
+                # --- oracle-d: true period supplied ---
+                o_decoded, _, o_shifts = vcl.classical_vigenere_solve(
+                    cipher, min_k, max_k, true_key_len=key_len)
+                om = min(len(clean_plain), len(o_decoded))
+                oracle_correct += sum(a == b for a, b in zip(clean_plain[:om], o_decoded[:om]))
+                oracle_total += om
+
+                # --- exact key recovery (under the oracle period) ---
+                true_shifts = [char2idx[c] for c in key]
+                exact_key += int(list(o_shifts) == true_shifts)
+
             results[key_len][chunk_len] = {
-                "char_acc": correct_chars / max(total_chars, 1) * 100,
-                "key_acc": correct_key_len / num_samples * 100,
-                "avg_ms": total_ms / num_samples,
+                "char_acc":        correct_chars / max(total_chars, 1) * 100,
+                "key_acc":         correct_key_len / num_samples * 100,
+                "oracle_char_acc": oracle_correct / max(oracle_total, 1) * 100,
+                "exact_key":       exact_key / num_samples * 100,
+                "avg_ms":          total_ms / num_samples,
             }
     return results
 
