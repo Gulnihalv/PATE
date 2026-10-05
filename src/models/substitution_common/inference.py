@@ -1,47 +1,48 @@
-"""Substitution inference: vocabulary and sliding-window decoding.
+"""Substitution inference: vocabulary and sliding-window decoding (space-free).
 
 For texts longer than seq_len a sliding window is used. Two modes:
   - raw        : each position takes the argmax of the first window covering it
   - consistent : a single bijective cipher->plain map is built from global votes
 
-Vocabulary order matches the generator: [<PAD>, <SOS>, <EOS>, space] + alphabet
-(PAD=0, SOS=1, EOS=2, space=3, letters from index 4).
+Vocabulary matches the generator: the alphabet only (letter i -> index i, no
+special tokens). Padding is passed to the model as a boolean mask.
 """
 
 from collections import defaultdict
 import torch
 
-PAD_IDX, SOS_IDX, EOS_IDX, SPACE_IDX = 0, 1, 2, 3
-SPECIAL_TOKENS = ["<PAD>", "<SOS>", "<EOS>", " "]
+
+def clean_text(text: str, alphabet: str) -> str:
+    """Turkish-aware lowercase and drop every character outside the alphabet."""
+    text = text.replace("I", "\u0131").replace("\u0130", "i").lower()
+    keep = set(alphabet)
+    return "".join(c for c in text if c in keep)
 
 
 def build_vocab(alphabet: str):
-    full = SPECIAL_TOKENS + list(alphabet)
-    char2idx = {c: i for i, c in enumerate(full)}
-    idx2char = {i: c for i, c in enumerate(full)}
+    char2idx = {c: i for i, c in enumerate(alphabet)}
+    idx2char = {i: c for i, c in enumerate(alphabet)}
     return char2idx, idx2char
 
 
-def text_to_padded_tensor(text: str, char2idx: dict, seq_len: int) -> torch.Tensor:
-    idx = [char2idx.get(c, PAD_IDX) for c in text][:seq_len]
-    idx += [PAD_IDX] * (seq_len - len(idx))
-    return torch.tensor(idx, dtype=torch.long)
+def text_to_padded_tensor(text: str, char2idx: dict, seq_len: int):
+    """Return (src [seq_len], pad_mask [seq_len], True = padding)."""
+    idx = [char2idx[c] for c in text][:seq_len]
+    n = len(idx)
+    idx += [0] * (seq_len - n)
+    mask = [False] * n + [True] * (seq_len - n)
+    return torch.tensor(idx, dtype=torch.long), torch.tensor(mask, dtype=torch.bool)
 
 
-def decode_tensor(pred_tensor, src_tensor, idx2char) -> str:
-    preds = pred_tensor.squeeze().tolist()
-    srcs = src_tensor.squeeze().tolist()
-    out = []
-    for p_idx, s_idx in zip(preds, srcs):
-        if s_idx == PAD_IDX:
-            break
-        ch = idx2char.get(p_idx, "")
-        if ch in ("<PAD>", "<EOS>"):
-            break
-        if ch == "<SOS>":
-            continue
-        out.append(ch)
-    return "".join(out)
+def _batch(text, char2idx, seq_len, device):
+    src, mask = text_to_padded_tensor(text, char2idx, seq_len)
+    return src.unsqueeze(0).to(device), mask.unsqueeze(0).to(device)
+
+
+def decode_tensor(pred_tensor, pad_mask, idx2char) -> str:
+    preds = pred_tensor.squeeze(0).tolist()
+    pads = pad_mask.squeeze(0).tolist()
+    return "".join(idx2char[p] for p, is_pad in zip(preds, pads) if not is_pad)
 
 
 def build_consistent_map(votes: dict) -> dict:
@@ -60,8 +61,8 @@ def build_consistent_map(votes: dict) -> dict:
 def apply_consistent_map(cipher_text, final_map, char2idx, idx2char) -> str:
     out = []
     for ch in cipher_text:
-        c_idx = char2idx.get(ch, PAD_IDX)
-        out.append(idx2char.get(final_map[c_idx], ch) if c_idx in final_map else ch)
+        c_idx = char2idx[ch]
+        out.append(idx2char[final_map[c_idx]] if c_idx in final_map else ch)
     return "".join(out)
 
 
@@ -77,21 +78,20 @@ def infer_raw(model, cipher_text, char2idx, idx2char,
     n = len(cipher_text)
 
     if n <= seq_len:
-        src = text_to_padded_tensor(cipher_text, char2idx, seq_len).unsqueeze(0).to(device)
-        return decode_tensor(net.generate(src), src, idx2char)
+        src, mask = _batch(cipher_text, char2idx, seq_len, device)
+        return decode_tensor(net.generate(src, mask), mask, idx2char)
 
     raw = [""] * n
     start = 0
     while start < n:
         end = min(start + seq_len, n)
         window = cipher_text[start:end]
-        src = text_to_padded_tensor(window, char2idx, seq_len).unsqueeze(0).to(device)
-        pred = net.generate(src).squeeze().tolist()
+        src, mask = _batch(window, char2idx, seq_len, device)
+        pred = net.generate(src, mask).squeeze(0).tolist()
         for i in range(len(window)):
             g = start + i
             if raw[g] == "":
-                ch = idx2char.get(pred[i], "")
-                raw[g] = window[i] if ch in SPECIAL_TOKENS else ch
+                raw[g] = idx2char[pred[i]]
         if end == n:
             break
         start += stride
@@ -104,32 +104,17 @@ def infer_consistent(model, cipher_text, char2idx, idx2char,
     net = _nn_module(model)
     n = len(cipher_text)
 
-    if n <= seq_len:
-        src = text_to_padded_tensor(cipher_text, char2idx, seq_len).unsqueeze(0).to(device)
-        pred = net.generate(src)
-        cipher_seq = src.squeeze().tolist()
-        pred_seq = pred.squeeze().tolist()
-        votes = {}
-        for c, p in zip(cipher_seq, pred_seq):
-            if c < 4:
-                continue
-            votes.setdefault(c, {}).setdefault(p, 0)
-            votes[c][p] += 1
-        return apply_consistent_map(cipher_text, build_consistent_map(votes), char2idx, idx2char)
-
-    global_votes = defaultdict(lambda: defaultdict(int))
+    votes = defaultdict(lambda: defaultdict(int))
     start = 0
     while start < n:
         end = min(start + seq_len, n)
         window = cipher_text[start:end]
-        src = text_to_padded_tensor(window, char2idx, seq_len).unsqueeze(0).to(device)
-        src_list = src.squeeze().tolist()
-        pred_list = net.generate(src).squeeze().tolist()
+        src, mask = _batch(window, char2idx, seq_len, device)
+        src_list = src.squeeze(0).tolist()
+        pred_list = net.generate(src, mask).squeeze(0).tolist()
         for i in range(len(window)):
-            c_idx, p_idx = src_list[i], pred_list[i]
-            if c_idx >= 4:
-                global_votes[c_idx][p_idx] += 1
+            votes[src_list[i]][pred_list[i]] += 1
         if end == n:
             break
         start += stride
-    return apply_consistent_map(cipher_text, build_consistent_map(global_votes), char2idx, idx2char)
+    return apply_consistent_map(cipher_text, build_consistent_map(votes), char2idx, idx2char)

@@ -19,7 +19,7 @@ class BaseTransformerEncoder(ConsistentDecodingMixin, nn.Module):
 
     def __init__(
         self,
-        vocab_size: int = 33,
+        vocab_size: int = 29,
         embed_dim: int = 256,
         num_heads: int = 8,
         num_layers: int = 6,
@@ -31,9 +31,8 @@ class BaseTransformerEncoder(ConsistentDecodingMixin, nn.Module):
         assert embed_dim % num_heads == 0
 
         self.vocab_size = vocab_size
-        self.PAD_IDX = 0
 
-        self.embedding = nn.Embedding(vocab_size, embed_dim, padding_idx=0)
+        self.embedding = nn.Embedding(vocab_size, embed_dim)
         self.pos_encoding = PositionalEncoding(embed_dim, max_len, dropout)
 
         encoder_layer = nn.TransformerEncoderLayer(
@@ -59,9 +58,8 @@ class BaseTransformerEncoder(ConsistentDecodingMixin, nn.Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    def forward(self, src: torch.Tensor) -> torch.Tensor:
-        """src: [B, S] -> logits: [B, S, vocab_size]."""
-        pad_mask = src == self.PAD_IDX                      # [B, S]
+    def forward(self, src: torch.Tensor, pad_mask: torch.Tensor = None) -> torch.Tensor:
+        """src: [B, S], pad_mask: [B, S] (True = padding) -> logits: [B, S, vocab_size]."""
         src_emb = self.pos_encoding(self.embedding(src))    # [B, S, E]
         encoder_out = self.encoder(src_emb, src_key_padding_mask=pad_mask)
         return self.fc_out(encoder_out)

@@ -15,7 +15,7 @@ from models.substitution_common.decoding import ConsistentDecodingMixin
 class FreqAugmentedTransformer(ConsistentDecodingMixin, nn.Module):
     def __init__(
         self,
-        vocab_size: int = 33,
+        vocab_size: int = 29,
         embed_dim: int = 256,
         num_heads: int = 8,
         num_layers: int = 6,
@@ -27,9 +27,8 @@ class FreqAugmentedTransformer(ConsistentDecodingMixin, nn.Module):
         assert embed_dim % num_heads == 0
 
         self.vocab_size = vocab_size
-        self.PAD_IDX = 0
 
-        self.embedding = nn.Embedding(vocab_size, embed_dim, padding_idx=0)
+        self.embedding = nn.Embedding(vocab_size, embed_dim)
         self.pos_encoding = PositionalEncoding(embed_dim, max_len, dropout)
 
         # MLP that projects the global character frequency into embedding space
@@ -63,22 +62,23 @@ class FreqAugmentedTransformer(ConsistentDecodingMixin, nn.Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    def compute_global_stats(self, src: torch.Tensor) -> torch.Tensor:
-        """Character frequency histogram -> [B, vocab_size] (PAD excluded, normalized)."""
+    def compute_global_stats(self, src: torch.Tensor, pad_mask: torch.Tensor) -> torch.Tensor:
+        """Character frequency histogram -> [B, vocab_size] (padding excluded, normalized)."""
         one_hots = F.one_hot(src, num_classes=self.vocab_size).float()
-        mask = (src != self.PAD_IDX).float().unsqueeze(2)
+        mask = (~pad_mask).float().unsqueeze(2)
         total_counts = (one_hots * mask).sum(dim=1)
         seq_lengths = mask.sum(dim=1).clamp(min=1)
         return total_counts / seq_lengths
 
-    def forward(self, src: torch.Tensor) -> torch.Tensor:
-        """src: [B, S] -> logits: [B, S, vocab_size]."""
+    def forward(self, src: torch.Tensor, pad_mask: torch.Tensor = None) -> torch.Tensor:
+        """src: [B, S], pad_mask: [B, S] (True = padding) -> logits: [B, S, vocab_size]."""
         B, S = src.shape
         device = src.device
-        pad_mask = src == self.PAD_IDX  # [B, S]
+        if pad_mask is None:
+            pad_mask = torch.zeros_like(src, dtype=torch.bool)
 
         # Frequency token: [B, 1, E]
-        global_freqs = self.compute_global_stats(src)
+        global_freqs = self.compute_global_stats(src, pad_mask)
         freq_token = self.freq_encoder(global_freqs).unsqueeze(1)
 
         # Cipher embedding + positional encoding: [B, S, E]

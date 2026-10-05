@@ -12,7 +12,7 @@ from models.substitution_fate.model import FreqAugmentedTransformer
 class SubstitutionCipherSolverFreq(SubstitutionLightningBase):
     def __init__(
         self,
-        vocab_size: int = 33,
+        vocab_size: int = 29,
         embed_dim: int = 256,
         num_heads: int = 8,
         num_layers: int = 6,
@@ -36,8 +36,8 @@ class SubstitutionCipherSolverFreq(SubstitutionLightningBase):
         )
 
         self.loss_fn = nn.CrossEntropyLoss(
-            ignore_index=0, label_smoothing=label_smoothing
+            ignore_index=-100, label_smoothing=label_smoothing
         )
         self.accuracy = torchmetrics.Accuracy(
-            task="multiclass", num_classes=vocab_size, ignore_index=0
+            task="multiclass", num_classes=vocab_size, ignore_index=-100
         )

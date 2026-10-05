@@ -12,12 +12,12 @@ import pytorch_lightning as pl
 
 class SubstitutionLightningBase(pl.LightningModule):
 
-    def forward(self, src):
-        return self.model(src)
+    def forward(self, src, pad_mask=None):
+        return self.model(src, pad_mask)
 
     def training_step(self, batch, batch_idx):
-        src, _tgt_input, tgt_output = batch
-        logits = self.model(src)               # [B, S, V]
+        src, pad_mask, tgt_output = batch
+        logits = self.model(src, pad_mask)     # [B, S, V]
         loss = self.loss_fn(
             logits.reshape(-1, self.hparams.vocab_size),
             tgt_output.reshape(-1),
@@ -26,8 +26,8 @@ class SubstitutionLightningBase(pl.LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx):
-        src, _tgt_input, tgt_output = batch
-        logits = self.model(src)
+        src, pad_mask, tgt_output = batch
+        logits = self.model(src, pad_mask)
         loss = self.loss_fn(
             logits.reshape(-1, self.hparams.vocab_size),
             tgt_output.reshape(-1),

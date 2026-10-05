@@ -29,7 +29,7 @@ class SubstitutionDataModule(pl.LightningDataModule):
         full = SubstutionDataGenerator(
             self.hparams.text_path, self.hparams.alphabet, self.hparams.seq_len
         )
-        self.vocab_size = len(full.full_alphabet)  # 29 letters + 4 special tokens = 33
+        self.vocab_size = full.vocab_size  # 29 letters, no special tokens
 
         total = len(full)
         val_size = int(total * self.hparams.val_split)

@@ -38,6 +38,7 @@ def run_model_comparison(models, validation_text, test_lengths,
                               "raw_ms": [...], "cons_ms": [...]}
     """
     char2idx, idx2char = infer.build_vocab(alphabet_chars)
+    validation_text = infer.clean_text(validation_text, alphabet_chars)  # model is space-free
     results = {name: {"len": [], "raw": [], "cons": [], "raw_ms": [], "cons_ms": []}
                for name in models}
 
