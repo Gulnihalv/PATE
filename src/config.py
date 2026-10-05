@@ -35,7 +35,6 @@ DATA_DIR       = Path(os.environ.get("CRYPT_DATA_DIR", STORAGE_ROOT / "data"))
 CHECKPOINT_DIR = Path(os.environ.get("CRYPT_CKPT_DIR", STORAGE_ROOT / "checkpoints"))
 TB_LOG_DIR     = Path(os.environ.get("CRYPT_LOG_DIR",  STORAGE_ROOT / "tb_logs"))
 
-# Turkish alphabet (29 letters, no space). Special tokens are added in the generators.
 ALPHABET = "abc\u00e7defg\u011fh\u0131ijklmno\u00f6prs\u015ftu\u00fcvyz"
 
 
