@@ -1,4 +1,14 @@
 """Classical (learning-free) Vigenère solver used as a baseline.
+
+Pipeline:
+  1. Key-length estimation: Kasiski (GCD of repeated-trigram distances) plus
+     Index of Coincidence (target Turkish IoC ~0.0762); the candidate closest
+     to the target IoC is chosen.
+  2. Per key position, the Caesar shift is found by chi-square against Turkish
+     letter frequencies.
+  3. Vigenère decryption.
+
+Model-independent (standard library only).
 """
 
 import math
@@ -11,9 +21,6 @@ ALPHA_S = set(ALPHA)
 N_ALPHA = len(ALPHA)                                # 29
 TR_IOC = 0.0762
 
-MIN_KEY_LEN = 3
-MAX_KEY_LEN = 32          # must match the experimental key-length range
-
 # Turkish letter frequencies (normalized, space-free alphabet)
 TR_FREQ_VIG = {
     'a': 0.1281, 'e': 0.0994, 'i': 0.0916, 'n': 0.0815, 'l': 0.0606,
@@ -24,8 +31,6 @@ TR_FREQ_VIG = {
     'c': 0.0092, 'f': 0.0039, 'v': 0.0102, 'j': 0.0002,
 }
 
-CHAR2IDX = {c: i for i, c in enumerate(ALPHA)}
-
 
 def index_of_coincidence(text: str) -> float:
     n = len(text)
@@ -35,29 +40,18 @@ def index_of_coincidence(text: str) -> float:
     return sum(c * (c - 1) for c in counts.values()) / (n * (n - 1))
 
 
-def _avg_group_ioc(cipher_text: str, k: int) -> float:
-    """Mean IoC over the k cosets induced by period k."""
-    groups = [cipher_text[i::k] for i in range(k)]
-    valid = [g for g in groups if len(g) >= 2]
-    if not valid:
-        return 0.0
-    return sum(index_of_coincidence(g) for g in valid) / len(valid)
-
-
-def estimate_key_length_ioc(cipher_text, min_k=MIN_KEY_LEN, max_k=MAX_KEY_LEN) -> int:
+def estimate_key_length_ioc(cipher_text, min_k=3, max_k=12) -> int:
     best_k, best_dist = min_k, float("inf")
     for k in range(min_k, max_k + 1):
-        # a coset needs at least two characters for IoC to be defined
-        if len(cipher_text) < 2 * k:
-            continue
-        dist = abs(_avg_group_ioc(cipher_text, k) - TR_IOC)
+        groups = ["".join(cipher_text[i::k]) for i in range(k)]
+        avg_ioc = sum(index_of_coincidence(g) for g in groups) / k
+        dist = abs(avg_ioc - TR_IOC)
         if dist < best_dist:
             best_dist, best_k = dist, k
     return best_k
 
 
-def estimate_key_length_kasiski(cipher_text, min_k=MIN_KEY_LEN, max_k=MAX_KEY_LEN,
-                                ngram_len=3) -> int:
+def estimate_key_length_kasiski(cipher_text, min_k=3, max_k=12, ngram_len=3) -> int:
     positions = {}
     for i in range(len(cipher_text) - ngram_len + 1):
         ng = cipher_text[i:i + ngram_len]
@@ -78,12 +72,14 @@ def estimate_key_length_kasiski(cipher_text, min_k=MIN_KEY_LEN, max_k=MAX_KEY_LE
     return estimate_key_length_ioc(cipher_text, min_k, max_k)
 
 
-def estimate_key_length_combined(cipher_text, min_k=MIN_KEY_LEN, max_k=MAX_KEY_LEN) -> int:
+def estimate_key_length_combined(cipher_text, min_k=3, max_k=12) -> int:
     candidates = {estimate_key_length_ioc(cipher_text, min_k, max_k),
                   estimate_key_length_kasiski(cipher_text, min_k, max_k)}
     best_k, best_sc = min(candidates), float("inf")
     for k in candidates:
-        sc = abs(_avg_group_ioc(cipher_text, k) - TR_IOC)
+        groups = ["".join(cipher_text[i::k]) for i in range(k)]
+        avg_ioc = sum(index_of_coincidence(g) for g in groups) / k
+        sc = abs(avg_ioc - TR_IOC)
         if sc < best_sc:
             best_sc, best_k = sc, k
     return best_k
@@ -113,7 +109,7 @@ def vigenere_decrypt(cipher_text, key_shifts) -> str:
     result, pos = [], 0
     for char in cipher_text:
         if char in ALPHA_S:
-            c_idx = CHAR2IDX[char]
+            c_idx = ALPHA.index(char)
             p_idx = (c_idx - key_shifts[pos % k]) % N_ALPHA
             result.append(ALPHA[p_idx])
             pos += 1
@@ -122,17 +118,10 @@ def vigenere_decrypt(cipher_text, key_shifts) -> str:
     return "".join(result)
 
 
-def classical_vigenere_solve(cipher_text, min_k=MIN_KEY_LEN, max_k=MAX_KEY_LEN,
-                             true_key_len=None):
-    """Full classical pipeline.
-    Returns (plaintext, used_key_len, key_shifts).
-    """
-    if true_key_len is not None:
-        pred_key_len = true_key_len
-    else:
-        pred_key_len = estimate_key_length_combined(cipher_text, min_k, max_k)
-
-    groups = [cipher_text[i::pred_key_len] for i in range(pred_key_len)]
+def classical_vigenere_solve(cipher_text, min_k=3, max_k=12):
+    """Full classical pipeline. Returns (plaintext, estimated_key_length)."""
+    pred_key_len = estimate_key_length_combined(cipher_text, min_k, max_k)
+    groups = ["".join(cipher_text[i::pred_key_len]) for i in range(pred_key_len)]
     key_shifts = [crack_caesar_position(g) for g in groups]
     plaintext = vigenere_decrypt(cipher_text, key_shifts)
-    return plaintext, pred_key_len, key_shifts
+    return plaintext, pred_key_len
