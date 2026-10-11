@@ -71,9 +71,18 @@ def _nn_module(model):
     return model.model if hasattr(model, "model") else model
 
 
+def _window_starts(n: int, seq_len: int, stride: int) -> list:
+    """Window start offsets; the last window is aligned to the end of the text
+    so every window is a full seq_len (no short, padded tail window)."""
+    starts = list(range(0, max(n - seq_len, 0) + 1, stride))
+    if n > seq_len and starts[-1] != n - seq_len:
+        starts.append(n - seq_len)
+    return starts
+
+
 @torch.no_grad()
 def infer_raw(model, cipher_text, char2idx, idx2char,
-              seq_len=256, stride=200, device="cpu") -> str:
+              seq_len=512, stride=400, device="cpu") -> str:
     net = _nn_module(model)
     n = len(cipher_text)
 
@@ -82,39 +91,29 @@ def infer_raw(model, cipher_text, char2idx, idx2char,
         return decode_tensor(net.generate(src, mask), mask, idx2char)
 
     raw = [""] * n
-    start = 0
-    while start < n:
-        end = min(start + seq_len, n)
-        window = cipher_text[start:end]
+    for start in _window_starts(n, seq_len, stride):
+        window = cipher_text[start:start + seq_len]
         src, mask = _batch(window, char2idx, seq_len, device)
         pred = net.generate(src, mask).squeeze(0).tolist()
         for i in range(len(window)):
             g = start + i
             if raw[g] == "":
                 raw[g] = idx2char[pred[i]]
-        if end == n:
-            break
-        start += stride
     return "".join(raw)
 
 
 @torch.no_grad()
 def infer_consistent(model, cipher_text, char2idx, idx2char,
-                     seq_len=256, stride=200, device="cpu") -> str:
+                     seq_len=512, stride=400, device="cpu") -> str:
     net = _nn_module(model)
     n = len(cipher_text)
 
     votes = defaultdict(lambda: defaultdict(int))
-    start = 0
-    while start < n:
-        end = min(start + seq_len, n)
-        window = cipher_text[start:end]
+    for start in _window_starts(n, seq_len, stride):
+        window = cipher_text[start:start + seq_len]
         src, mask = _batch(window, char2idx, seq_len, device)
         src_list = src.squeeze(0).tolist()
         pred_list = net.generate(src, mask).squeeze(0).tolist()
         for i in range(len(window)):
             votes[src_list[i]][pred_list[i]] += 1
-        if end == n:
-            break
-        start += stride
     return apply_consistent_map(cipher_text, build_consistent_map(votes), char2idx, idx2char)

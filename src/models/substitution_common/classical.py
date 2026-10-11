@@ -10,11 +10,11 @@ corpus tables. This module is model-independent (standard library only).
 import math
 import random
 
-ALPHABET = "abcçdefgğhıijklmnoöprsştuüvyz "   # 30 characters (space included)
+ALPHABET = "abcçdefgğhıijklmnoöprsştuüvyz"   # 30 characters (space included)
 ALPHA_SET = set(ALPHABET)
 
 # Approximate Turkish letter-frequency order (smart SA start)
-TR_ORDER = list(" aeinrlktdsmybouğşçhzgüöpvcfjı")
+TR_ORDER = list("aeinrlktdsmybouğşçhzgüöpvcfjı")
 
 # Turkish digram frequencies (per 100,000)
 RAW_DIGRAMS = {

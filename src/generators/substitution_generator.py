@@ -1,3 +1,4 @@
+import math
 import random
 import torch
 from torch.utils.data import Dataset
@@ -50,9 +51,10 @@ class SubstutionDataGenerator(Dataset):
     def __getitem__(self, index):
         plain_text = self.get_chunk(index)
 
-        # Dynamic cropping: ~50% of the time use a random-length window
-        if len(plain_text) > 40 and random.random() < 0.5:
-            n = random.randint(30, len(plain_text) - 1)
+        # Dynamic cropping: ~70% of the time use a random-length window.
+        # Length is log-uniform so short texts stay well represented at large seq_len.
+        if len(plain_text) > 40 and random.random() < 0.7:
+            n = int(math.exp(random.uniform(math.log(30), math.log(len(plain_text) - 1))))
             s = random.randint(0, len(plain_text) - n)
             plain_text = plain_text[s:s + n]
 
