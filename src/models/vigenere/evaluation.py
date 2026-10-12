@@ -25,6 +25,9 @@ Field naming follows that split. Unprefixed fields are the pipeline:
                         chi-square solver.
 `blind_period_acc`    : per-key-length accuracy of the unconditioned first-pass
                         estimate, for models that have a key-length head.
+`blind_period_grid`   : the same estimate per (key length, text length) cell.
+`no_fallback_char_grid`: character accuracy with the fallback disabled.
+`print_final_table`   : PATE (blind, pipeline, OOD) beside the classical solver.
 `load_clean_text`     : read a corpus and drop every character outside the alphabet.
 `frequency_distance`  : L1 distance between the character distributions of two
                         corpora, used to confirm that an out-of-distribution set
@@ -180,7 +183,7 @@ def run_neural_eval(model, validation_text, test_lengths, test_key_lens,
             total_chars = correct_chars = correct_key_len = 0
             cons_total = cons_correct = 0
             exact_keys = key_sym_hits = key_sym_total = 0
-            total_ms = 0.0
+            total_ms = fallbacks = 0.0
             srcs, ciphers, plains, keys = [], [], [], []
 
             for i in range(num_samples):
@@ -200,6 +203,7 @@ def run_neural_eval(model, validation_text, test_lengths, test_key_lens,
                 total_chars += m
                 pred_key_len = int(result["best_key_len"])
                 correct_key_len += int(pred_key_len == key_len)
+                fallbacks += int(result.get("method") == "fallback_bruteforce")
 
                 if key_metrics:
                     exact, sym_hits, n_key, consistent = _key_metrics(
@@ -221,6 +225,7 @@ def run_neural_eval(model, validation_text, test_lengths, test_key_lens,
                 "char_acc": correct_chars / max(total_chars, 1) * 100,
                 "key_acc": correct_key_len / num_samples * 100,
                 "avg_ms": total_ms / num_samples,
+                "fb_rate": fallbacks / num_samples * 100,
             }
 
             if key_metrics:
@@ -361,6 +366,71 @@ def blind_period_acc(model, text, alphabet_chars, text_len=512, num_samples=300,
     return acc
 
 
+@torch.no_grad()
+def blind_period_grid(model, text, test_lengths, test_key_lens, alphabet_chars,
+                      num_samples=500, device="cpu", unknown_key=0, batch_size=100):
+    """Blind period accuracy for every (key_len, text_len) cell.
+
+    The first-pass estimate with no validity safeguard: the same samples as
+    `run_neural_eval`, so the two grids line up cell for cell.
+    """
+    char2idx, idx2char = vinf.build_vocab(alphabet_chars)
+    clean = _clean(text, char2idx)
+
+    out = {}
+    for k in test_key_lens:
+        out[k] = {}
+        for L in test_lengths:
+            hits = 0
+            for b0 in range(0, num_samples, batch_size):
+                batch = []
+                for i in range(b0, min(b0 + batch_size, num_samples)):
+                    start = (i * L * 13) % max(1, len(clean) - L)
+                    key = get_fixed_key(k, i, alphabet_chars)
+                    cipher, _ = vinf.encrypt_vigenere(clean[start:start + L],
+                                                      key, char2idx, idx2char)
+                    batch.append(vinf.text_to_tensor(cipher, char2idx, device).reshape(-1))
+                src = torch.stack(batch)
+                unknown = torch.full((src.size(0),), unknown_key,
+                                     dtype=torch.long, device=device)
+                _, _, keylen_logits = model(src, unknown)
+                pred = keylen_logits.argmax(dim=-1) + model.min_key_len
+                hits += int((pred == k).sum().item())
+            out[k][L] = hits / num_samples * 100
+    return out
+
+
+@torch.no_grad()
+def no_fallback_char_grid(model, text, test_lengths, test_key_lens, alphabet_chars,
+                          num_samples=500, device="cpu"):
+    """Character accuracy with the validity safeguard disabled.
+
+    Decryption proceeds from the blind period estimate whether or not it is
+    correct, on the same samples as `run_neural_eval`.
+    """
+    char2idx, idx2char = vinf.build_vocab(alphabet_chars)
+    clean = _clean(text, char2idx)
+
+    out = {}
+    for k in test_key_lens:
+        out[k] = {}
+        for L in test_lengths:
+            correct = total = 0
+            for i in range(num_samples):
+                start = (i * L * 13) % max(1, len(clean) - L)
+                key = get_fixed_key(k, i, alphabet_chars)
+                cipher, plain = vinf.encrypt_vigenere(clean[start:start + L],
+                                                      key, char2idx, idx2char)
+                src = vinf.text_to_tensor(cipher, char2idx, device)
+                r = model.decode(src, use_fallback=False)
+                dec = "".join(idx2char.get(x, "") for x in r["plaintext"].tolist())
+                m = min(len(plain), len(dec))
+                correct += sum(a == b for a, b in zip(plain[:m], dec[:m]))
+                total += m
+            out[k][L] = correct / max(total, 1) * 100
+    return out
+
+
 def run_ood_eval(model, ood_path, validation_path, alphabet_chars,
                  test_lengths=(128, 256, 512), test_key_lens=None,
                  num_samples=500, device="cpu", blind=True, unknown_key=0):
@@ -466,6 +536,38 @@ def print_comparison(neural, classical,
         print(f"{k:>4} {L:>5} | {n['char_acc']:7.1f} {n['key_acc']:7.1f} {ek[0]} "
               f"| {c['char_acc']:7.1f} {c['key_acc']:7.1f} {ek[1]} "
               f"| {n['char_acc'] - c['char_acc']:+7.1f} {ek[2]}")
+
+
+def print_final_table(neural, blind, ood, classical, nofb=None):
+    """PATE (blind, pipeline, out-of-distribution) beside the classical solver.
+
+    BLND%  : period from the first pass alone, no fallback
+    KEY%   : period recovered by the full pipeline
+    CHAR%  : character accuracy of the pipeline on the validation corpus
+    EXKEY% : full key recovered -- period and every shift
+    CHAR% (OOD) : pipeline character accuracy on the out-of-distribution corpus
+    FB%    : share of inputs sent to the exhaustive fallback
+    CHAR% (noFB) : character accuracy with the fallback disabled
+
+    `blind`, `ood` and `nofb` may be None, in which case their column prints "-".
+    """
+    def f(v, w):
+        return f"{v:>{w}.1f}" if v is not None else f"{'-':>{w}}"
+
+    print(f"{'':16}|{'-' * 31} PATE {'-' * 31}|  |------ classical ------|")
+    print("  d      L      | BLND%   KEY%   CHAR%   EXKEY%   CHAR% (OOD)   "
+          "FB%   CHAR% (noFB)   |  | KEY%   CHAR%   EXKEY% |")
+    print("-" * 16 + "+" + "-" * 68 + "  +" + "-" * 24)
+    for k, L, n, c in _shared_cells(neural, classical):
+        b = blind[k][L] if blind else None
+        o = ood[k][L]["char_acc"] if ood else None
+        nf = nofb[k][L] if nofb else None
+        print(f"{k:>3}{L:>7}      | "
+              f"{f(b, 5)}   {f(n['key_acc'], 4)}   {f(n['char_acc'], 5)}   "
+              f"{f(n.get('exact_key'), 6)}   {f(o, 11)}   "
+              f"{f(n.get('fb_rate'), 3)}   {f(nf, 12)}   |  "
+              f"| {f(c['key_acc'], 4)}   {f(c['char_acc'], 5)}   "
+              f"{f(c.get('exact_key'), 6)} |")
 
 
 def print_oracle_comparison(neural, classical,
