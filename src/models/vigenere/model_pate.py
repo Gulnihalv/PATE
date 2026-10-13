@@ -282,7 +282,7 @@ class VigenereSolver(pl.LightningModule):
 
     # ---- inference: two passes, as in PATE ----
     @torch.no_grad()
-    def decode(self, ciphertext_indices, fallback_threshold=0.5, use_fallback=True):
+    def decode(self, ciphertext_indices, fallback_threshold=0.9, use_fallback=True):
         self.eval()
         device = ciphertext_indices.device
         src = ciphertext_indices.unsqueeze(0)

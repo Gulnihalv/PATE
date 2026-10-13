@@ -11,6 +11,8 @@ threshold then follows without running the model again, since a threshold only
 decides which of the two already-computed decodings is kept.
 """
 
+import collections
+
 import torch
 
 from models.vigenere import inference as vinf
@@ -125,3 +127,40 @@ def sweep(records, thresholds=None, tolerance=0.5):
     print(f"chosen threshold {chosen:g}: within {tolerance} points of the best, "
           f"at {dict((t, f) for t, _, f in rows)[chosen]:.1f}% fallback")
     return rows, chosen
+
+
+def per_cell(records, t_old=0.5, t_new=0.95):
+    """Where the fallback lands, and what moving the threshold does per cell.
+
+    Only samples with t_old <= validity < t_new change decoding between the two
+    thresholds; `moved` counts them, and `up` / `down` split them by whether the
+    exhaustive pass beat or lost to the blind decoding. The net accuracy change
+    rests on these few samples, so the counts matter more than the percentage.
+    """
+    agg = collections.defaultdict(lambda: dict(n=0, fb_old=0, fb_new=0, sw=0,
+                                               up=0, down=0, a_old=0.0, a_new=0.0))
+    for r in records:
+        c = agg[(r["key_len"], r["text_len"])]
+        old, new = r["validity"] < t_old, r["validity"] < t_new
+        c["n"] += 1
+        c["fb_old"] += old
+        c["fb_new"] += new
+        c["a_old"] += r["acc_fallback"] if old else r["acc_blind"]
+        c["a_new"] += r["acc_fallback"] if new else r["acc_blind"]
+        if new and not old:                     # only these samples change
+            c["sw"] += 1
+            c["up"] += r["acc_fallback"] > r["acc_blind"]
+            c["down"] += r["acc_fallback"] < r["acc_blind"]
+
+    print(f"{'d':>4} {'L':>5} | {'FB%':>6} {'FB%':>6} | {'moved':>5} {'up':>4} {'down':>4} "
+          f"| {'CHAR%':>7} {'CHAR%':>7} {'diff':>7}")
+    print(f"{'':>4} {'':>5} | {f't={t_old:g}':>6} {f't={t_new:g}':>6} | {'':>15} "
+          f"| {f't={t_old:g}':>7} {f't={t_new:g}':>7}")
+    print("-" * 72)
+    for (d, L), c in sorted(agg.items()):
+        n = c["n"]
+        print(f"{d:>4} {L:>5} | {100*c['fb_old']/n:6.1f} {100*c['fb_new']/n:6.1f} "
+              f"| {c['sw']:>5} {c['up']:>4} {c['down']:>4} "
+              f"| {100*c['a_old']/n:7.2f} {100*c['a_new']/n:7.2f} "
+              f"{100*(c['a_new']-c['a_old'])/n:+7.2f}")
+    return dict(agg)
