@@ -539,35 +539,41 @@ def print_comparison(neural, classical,
 
 
 def print_final_table(neural, blind, ood, classical, nofb=None):
-    """PATE (blind, pipeline, out-of-distribution) beside the classical solver.
+    """PATE without and with the validity check, beside the classical solver.
 
-    BLND%  : period from the first pass alone, no fallback
-    KEY%   : period recovered by the full pipeline
-    CHAR%  : character accuracy of the pipeline on the validation corpus
-    EXKEY% : full key recovered -- period and every shift
-    CHAR% (OOD) : pipeline character accuracy on the out-of-distribution corpus
-    FB%    : share of inputs sent to the exhaustive fallback
-    CHAR% (noFB) : character accuracy with the fallback disabled
+    without verification (first-pass period, fallback disabled):
+      KEY%   : period from the first pass alone (blind period accuracy)
+      CHAR%  : character accuracy with the fallback disabled
+    FB%      : share of inputs the validity check sent to the exhaustive fallback
+    with verification (full pipeline):
+      KEY%   : period recovered by the pipeline
+      CHAR%  : character accuracy on the validation corpus
+      EXKEY% : full key recovered -- period and every shift
+      OOD%   : pipeline character accuracy on the out-of-distribution corpus
+    classical: KEY%, CHAR%, EXKEY% of the learning-free solver
 
     `blind`, `ood` and `nofb` may be None, in which case their column prints "-".
     """
     def f(v, w):
         return f"{v:>{w}.1f}" if v is not None else f"{'-':>{w}}"
 
-    print(f"{'':16}|{'-' * 31} PATE {'-' * 31}|  |------ classical ------|")
-    print("  d      L      | BLND%   KEY%   CHAR%   EXKEY%   CHAR% (OOD)   "
-          "FB%   CHAR% (noFB)   |  | KEY%   CHAR%   EXKEY% |")
-    print("-" * 16 + "+" + "-" * 68 + "  +" + "-" * 24)
+    head1 = ("           | without verification |       |"
+             "         with verification         |        classical       ")
+    head2 = ("   d     L |    KEY%    CHAR% |   FB% |"
+             "    KEY%   CHAR%  EXKEY%     OOD% |    KEY%   CHAR%  EXKEY%")
+    print(head1)
+    print(head2)
+    print("-" * len(head2))
     for k, L, n, c in _shared_cells(neural, classical):
         b = blind[k][L] if blind else None
         o = ood[k][L]["char_acc"] if ood else None
         nf = nofb[k][L] if nofb else None
-        print(f"{k:>3}{L:>7}      | "
-              f"{f(b, 5)}   {f(n['key_acc'], 4)}   {f(n['char_acc'], 5)}   "
-              f"{f(n.get('exact_key'), 6)}   {f(o, 11)}   "
-              f"{f(n.get('fb_rate'), 3)}   {f(nf, 12)}   |  "
-              f"| {f(c['key_acc'], 4)}   {f(c['char_acc'], 5)}   "
-              f"{f(c.get('exact_key'), 6)} |")
+        print(f"{k:>4}{L:>6} |"
+              f"{f(b, 8)}{f(nf, 9)} |"
+              f"{f(n.get('fb_rate'), 7)} |"
+              f"{f(n['key_acc'], 8)}{f(n['char_acc'], 7)}{f(n.get('exact_key'), 8)}{f(o, 9)} |"
+              f"{f(c['key_acc'], 8)}{f(c['char_acc'], 7)}{f(c.get('exact_key'), 8)}")
+
 
 
 def print_oracle_comparison(neural, classical,
